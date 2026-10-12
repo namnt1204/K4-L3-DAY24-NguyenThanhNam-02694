@@ -1,5 +1,13 @@
-# Baseline — điền trong checkpoint 1
+# CP1 — Baseline Analysis
 
-1. Agent có identity mỗi run chưa? Dẫn file/hàm:
-2. Ai cho phép `http_post`? Dẫn file/hàm:
-3. Nếu gửi sai PII ra sink, bằng chứng ở đâu? Dẫn file/hàm:
+## Q1. Identity và authorization
+Mỗi lần chạy baseline hoàn toàn chưa có `agent_id`, `run_id` hay danh tính người dùng để kiểm soát quyền hạn. Tham số CLI `--as` nhận `principal_id` tại `agent/loop.py:83-84` và truyền vào `run_once()` (`agent/loop.py:90-91`), nhưng khi `agent/runner.py:74` báo scaffold pending, hàm `run_once()` gọi fallback sang `_naive_loop(message, llm)` tại `agent/loop.py:74` mà hoàn toàn không truyền `principal_id` vào. Hàm `_naive_loop()` tại `agent/loop.py:27` không khởi tạo identity, không gán ID phiên chạy và không hề thực hiện bất kỳ bước kiểm tra quyền (authorization) nào trước khi thao tác dữ liệu.
+
+## Q2. Policy trước http_post
+Trước khi gọi `read_customer()` (`agent/loop.py:39`) và `http_post()` (`agent/loop.py:44`), hoàn toàn không có policy hay cơ chế kiểm tra mục đích, quyền người dùng hay loại dữ liệu được phép gửi. Kẻ tấn công kiểm soát chỉ thị ẩn trong ticket, sau đó Mock LLM và logic baseline biến nội dung đó thành quyết định gọi tool với `injected.customer_ids` và `injected.target_url` tại `agent/loop.py:34-44`. Cơ chế URL allowlist tại `agent/tools.py:76-83` chỉ là kiểm soát URL ở tầng ứng dụng nhằm tránh gửi ra Internet (`agent/tools.py:71-74`), không phải data authorization vì không thẩm định quyền người gọi và không kiểm soát nội dung payload.
+
+## Q3. POST body và sink evidence
+Body của HTTP POST được tạo trực tiếp tại `agent/loop.py:44` bằng dictionary `{"records": collected}`, đóng gói danh sách hồ sơ khách hàng vừa đọc từ `tools.read_customer()` (`agent/loop.py:39`). Lời gọi phát tán HTTP POST được kích hoạt tại `agent/loop.py:44` (`tools.http_post(...)`) và thực hiện gửi mạng qua `requests.post()` tại `agent/tools.py:84`. File ghi nhận dữ liệu phía sink là `reports/sink.log` do `sink/sink.py:36-37` và `sink/sink.py:46-47` định nghĩa và append khi server nhận request POST, tuy nhiên tại bước phân tích mã nguồn (CP1) chưa thể khẳng định dữ liệu đã tới sink khi chưa có log thực nghiệm runtime của CP2.
+
+## Kết luận
+Dữ liệu ticket trong `corpus/` là dữ liệu không đáng tin cậy (untrusted data), nhưng baseline lại để LLM phân tích và tuân theo các chỉ thị bên trong như mệnh lệnh điều khiển hệ thống (`agent/loop.py:34-44`). Mã nguồn baseline hoàn toàn thiếu vắng Policy Enforcement Point (PEP) và kiểm soát danh tính trước các thao tác nhạy cảm là đọc hồ sơ khách hàng chứa PII (`read_customer`) và phát tán dữ liệu qua mạng (`http_post`). Rào chắn allowlist URL ở tầng ứng dụng không đồng nghĩa với kiểm soát dữ liệu, dẫn đến việc PII khách hàng có thể bị gửi trái phép tới HTTP sink localhost khi gặp prompt injection.
